@@ -79,7 +79,7 @@ app.post("/jwt", (req, res) => {
 });
 
 // ------------------------------------
-// amin api-------
+// admin api-------
 
 app.get("/users/admin/:email", verifyJWT, async (req, res) => {
   const email = req.params.email;
