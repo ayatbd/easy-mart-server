@@ -52,13 +52,35 @@ async function run() {
     const wishlistCollection = client.db("easyMartDB").collection("wishlist");
     const ordersCollection = client.db("easyMartDB").collection("orders");
 
-    // JWT Generation
-    app.post("/jwt", (req, res) => {
-      const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: "24h",
+    app.post("/login", async (req, res) => {
+      const { email, password } = req.body;
+
+      // 1. Find the user in the database
+      const user = await usersCollection.findOne({ email: email });
+
+      if (!user) {
+        return res.status(401).send({ error: true, message: "User not found" });
+      }
+
+      // 2. Check password (Note: In production, use bcrypt.compare)
+      if (user.password !== password) {
+        return res
+          .status(401)
+          .send({ error: true, message: "Invalid password" });
+      }
+
+      // 3. If everything is correct, sign the token
+      const token = jwt.sign(
+        { email: user.email, role: user.role },
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: "24h" },
+      );
+
+      // 4. Send back the token and user info
+      res.send({
+        token,
+        user: { email: user.email, name: user.name, role: user.role },
       });
-      res.send({ token });
     });
 
     // Verify Admin Middleware (Must be used after verifyJWT)
@@ -167,6 +189,44 @@ async function run() {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await cartCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // ================= WISHLIST API =================
+    app.get("/wishlist", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const query = { userEmail: email };
+      const result = await wishlistCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.post("/wishlist", async (req, res) => {
+      const item = req.body;
+      const result = await wishlistCollection.insertOne(item);
+      res.send(result);
+    });
+
+    app.delete("/wishlist/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await wishlistCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // ================= ORDERS API =================
+    app.post("/orders", verifyJWT, async (req, res) => {
+      const order = req.body;
+      const result = await ordersCollection.insertOne(order);
+
+      // Optional: Clean up cart after order
+      const query = { email: order.email };
+      await cartCollection.deleteMany(query);
+
+      res.send(result);
+    });
+
+    app.get("/orders", verifyJWT, verifyAdmin, async (req, res) => {
+      const result = await ordersCollection.find().toArray();
       res.send(result);
     });
 
