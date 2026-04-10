@@ -269,6 +269,18 @@ async function run() {
 
     app.post("/wishlist", async (req, res) => {
       const item = req.body;
+      // Check if item already exists in cart for THIS user
+      const query = { productId: item.productId, userEmail: item.userEmail };
+      const existingItem = await wishlistCollection.findOne(query);
+
+      if (existingItem) {
+        // If exists, increment quantity
+        const updateDoc = { $inc: { quantity: 1 } };
+        const result = await wishlistCollection.updateOne(query, updateDoc);
+        return res.send(result);
+      }
+
+      // If not, add new
       const result = await wishlistCollection.insertOne(item);
       res.send(result);
     });
