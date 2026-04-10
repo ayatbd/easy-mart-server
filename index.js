@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 const app = express();
@@ -55,28 +56,28 @@ async function run() {
     app.post("/login", async (req, res) => {
       const { email, password } = req.body;
 
-      // 1. Find the user in the database
+      // 1. Find user
       const user = await usersCollection.findOne({ email: email });
-
       if (!user) {
         return res.status(401).send({ error: true, message: "User not found" });
       }
 
-      // 2. Check password (Note: In production, use bcrypt.compare)
-      if (user.password !== password) {
+      // 2. COMPARE the hashed password in DB with the plain text from the user
+      const isMatch = await bcrypt.compare(password, user.password);
+
+      if (!isMatch) {
         return res
           .status(401)
           .send({ error: true, message: "Invalid password" });
       }
 
-      // 3. If everything is correct, sign the token
+      // 3. If match, generate JWT
       const token = jwt.sign(
         { email: user.email, role: user.role },
         process.env.ACCESS_TOKEN_SECRET,
         { expiresIn: "24h" },
       );
 
-      // 4. Send back the token and user info
       res.send({
         token,
         user: { email: user.email, name: user.name, role: user.role },
@@ -97,6 +98,22 @@ async function run() {
     };
 
     // ================= USERS API =================
+    app.get("/user-info", verifyJWT, async (req, res) => {
+      const email = req.decoded.email;
+      const user = await usersCollection.findOne({ email: email });
+
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
+
+      // Send back user details (but not the password!)
+      res.send({
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      });
+    });
+
     app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
@@ -106,7 +123,16 @@ async function run() {
       const user = req.body;
       const query = { email: user.email };
       const existingUser = await usersCollection.findOne(query);
-      if (existingUser) return res.send({ message: "user already exists" });
+
+      if (existingUser) {
+        return res.send({ message: "user already exists" });
+      }
+
+      // --- HASH THE PASSWORD ---
+      // 10 is the "saltRounds" (the complexity of the hashing)
+      const hashedPassword = await bcrypt.hash(user.password, 10);
+      user.password = hashedPassword; // Replace plain text with hash
+
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
@@ -134,13 +160,41 @@ async function run() {
     // ================= PRODUCTS API =================
     // Get all products (with optional category filtering)
     app.get("/products", async (req, res) => {
-      const category = req.query.category;
+      const { category, search } = req.query;
+
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
+
       let query = {};
+
       if (category) {
-        query = { category: category };
+        query.category = category;
       }
-      const result = await productsCollection.find(query).toArray();
-      res.send(result);
+
+      if (search) {
+        query.name = { $regex: search, $options: "i" }; // case-insensitive search
+      }
+
+      try {
+        const total = await productsCollection.countDocuments(query);
+
+        const result = await productsCollection
+          .find(query)
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+          data: result,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
     });
 
     // Get single product details
@@ -181,6 +235,19 @@ async function run() {
 
     app.post("/carts", async (req, res) => {
       const item = req.body;
+
+      // Check if item already exists in cart for THIS user
+      const query = { productId: item.productId, email: item.email };
+      const existingItem = await cartCollection.findOne(query);
+
+      if (existingItem) {
+        // If exists, increment quantity
+        const updateDoc = { $inc: { quantity: 1 } };
+        const result = await cartCollection.updateOne(query, updateDoc);
+        return res.send(result);
+      }
+
+      // If not, add new
       const result = await cartCollection.insertOne(item);
       res.send(result);
     });
